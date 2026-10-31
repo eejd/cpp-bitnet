@@ -1,6 +1,6 @@
 // engine_logits: run a GGUF through libllama on the CPU (-ngl 0) and dump what the gate needs.
 //
-//   engine_logits --model m.gguf --threads N --cmds cmds.txt --out dir
+//   engine_logits --model m.gguf --threads N --cmds cmds.txt --out dir [--override-pre llama-bpe]
 //
 // cmds.txt, one command per line:
 //   L <idx> <id> <id> ...          logits of ALL positions of the given token sequence
@@ -41,7 +41,7 @@ static void on_crash(int sig) {          // a crash inside libllama is a gate re
 
 int main(int argc, char ** argv) {
     signal(SIGSEGV, on_crash); signal(SIGBUS, on_crash); signal(SIGABRT, on_crash);
-    std::string model_path, cmds_path, out_dir = ".";
+    std::string model_path, cmds_path, out_dir = ".", override_pre;
     int threads = 4;
     bool verbose = false;
     for (int i = 1; i < argc; i++) {
@@ -51,6 +51,7 @@ int main(int argc, char ** argv) {
         else if (a == "--cmds" && i + 1 < argc) cmds_path = argv[++i];
         else if (a == "--out" && i + 1 < argc) out_dir = argv[++i];
         else if (a == "--verbose") verbose = true;
+        else if (a == "--override-pre" && i + 1 < argc) override_pre = argv[++i];   // sets tokenizer.ggml.pre (official GGUF lacks it)
         else { fprintf(stderr, "unknown arg %s\n", a.c_str()); return 2; }
     }
     if (model_path.empty() || cmds_path.empty()) { fprintf(stderr, "usage: engine_logits --model m.gguf --cmds f --out dir [--threads N]\n"); return 2; }
@@ -59,6 +60,14 @@ int main(int argc, char ** argv) {
     llama_backend_init();
     llama_model_params mp = llama_model_default_params();
     mp.n_gpu_layers = 0;                      // CPU lane only (Metal has no I2_S kernel)
+    std::vector<llama_model_kv_override> kvo(2);
+    if (!override_pre.empty()) {
+        kvo[0].tag = LLAMA_KV_OVERRIDE_TYPE_STR;
+        snprintf(kvo[0].key, sizeof(kvo[0].key), "tokenizer.ggml.pre");
+        snprintf(kvo[0].val_str, sizeof(kvo[0].val_str), "%s", override_pre.c_str());
+        kvo[1].key[0] = 0;                    // terminator
+        mp.kv_overrides = kvo.data();
+    }
     llama_model * model = llama_model_load_from_file(model_path.c_str(), mp);
     if (!model) { fprintf(stderr, "failed to load %s\n", model_path.c_str()); return 3; }
     const llama_vocab * vocab = llama_model_get_vocab(model);

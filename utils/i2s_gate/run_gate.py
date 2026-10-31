@@ -54,6 +54,7 @@ def main() -> int:
     ap.add_argument("--ppl-ids", help="json list of ids (synthetic models; overrides --ppl-text)")
     ap.add_argument("--no-tokenizer", action="store_true", help="reference has no tokenizer: prompts must carry ids; skips tokenizer parity")
     ap.add_argument("--threads", type=int, default=4)
+    ap.add_argument("--override-pre", help="pass tokenizer.ggml.pre=<name> to the engine (the official GGUF has no such key)")
     ap.add_argument("--out", required=True)
     ap.add_argument("--ref-python", default=sys.executable)
     ap.add_argument("--ref-dtype", default="float32")
@@ -99,7 +100,8 @@ def main() -> int:
     if ref["ppl"]:
         lines.append("L 1000 %s" % " ".join(map(str, ref["ppl"]["ids"])))
     (eng_dir / "cmds.txt").write_text("\n".join(lines) + "\n")
-    subprocess.run([a.engine_bin, "--model", a.gguf, "--threads", str(a.threads), "--cmds", str(eng_dir / "cmds.txt"), "--out", str(eng_dir)], check=True)
+    subprocess.run([a.engine_bin, "--model", a.gguf, "--threads", str(a.threads), "--cmds", str(eng_dir / "cmds.txt"), "--out", str(eng_dir)]
+                   + (["--override-pre", a.override_pre] if a.override_pre else []), check=True)
     meta = json.loads((eng_dir / "meta.json").read_text())
     n_vocab = meta["n_vocab"]
 
@@ -140,7 +142,7 @@ def main() -> int:
 
     passed = all(c["pass"] for c in checks.values())
     result = {"status": "PASS" if passed else "FAIL", "tag": a.tag, "gguf": a.gguf, "ref_model": a.ref_model,
-              "tolerances_sha256_12": tol_sha, "tolerances_version": tol["version"], "near_tie": nt, "threads": a.threads, "engine_system_info": meta["system_info"], "checks": checks}
+              "tolerances_sha256_12": tol_sha, "tolerances_version": tol["version"], "override_pre": a.override_pre, "near_tie": nt, "threads": a.threads, "engine_system_info": meta["system_info"], "checks": checks}
     (out / "result.json").write_text(json.dumps(result, indent=1, default=float))
     for name, c in checks.items():
         extra = ""
