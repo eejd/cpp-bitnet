@@ -47,6 +47,11 @@ endif()
 
 find_package(Threads REQUIRED)
 
+option(BITNET_APPLY_LLAMA_PATCHES "bitnet.cpp: apply patches/llama.cpp/*.patch to the llama.cpp submodule" ON)
+if (BITNET_APPLY_LLAMA_PATCHES)
+    include(cmake/ApplyLlamaPatches.cmake)
+endif()
+
 add_subdirectory(src)
 set(LLAMA_BUILD_SERVER ON CACHE BOOL "Build llama.cpp server" FORCE)
 add_subdirectory(3rdparty/llama.cpp)

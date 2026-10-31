@@ -1,0 +1,12 @@
+diff --git a/ggml/src/ggml-cpu/ggml-cpu.c b/ggml/src/ggml-cpu/ggml-cpu.c
+index ec88ef29a..f5fb26e28 100644
+--- a/ggml/src/ggml-cpu/ggml-cpu.c
++++ b/ggml/src/ggml-cpu/ggml-cpu.c
+@@ -1492,6 +1492,7 @@ UseGgmlGemm2:;
+     if (src0->type == GGML_TYPE_I2_S && ggml_n_dims(src0) == 2) {
+         const void * src1_wdata = (src1->type == vec_dot_type) ? src1->data : params->wdata;
+         const size_t i2s_row_size = ggml_row_size(vec_dot_type, ne10);
++        const bool src1_cont = ggml_is_contiguous(src1);
+         const size_t src1_col_stride = src1_cont || src1->type != vec_dot_type ? i2s_row_size : nb11;
+ 
+         const int64_t matmul_num_cols = 4; // gemm processes 4 columns at a time
