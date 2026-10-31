@@ -32,6 +32,15 @@ if (GGML_BITNET_X86_TL2)
     add_compile_definitions(GGML_BITNET_X86_TL2)
 endif()
 
+# ggml.c (ggml-base) references quantize_i2_s / dequantize_row_i2_s, which are
+# defined in ggml-cpu/quants.c (ggml-cpu). ld64 does not allow undefined symbols
+# in a shared library, so the default shared build fails to link libggml-base on
+# macOS (microsoft/BitNet #682, #641, #635). Default to static libraries there;
+# an explicit -DBUILD_SHARED_LIBS=ON is still honoured.
+if (APPLE AND NOT DEFINED BUILD_SHARED_LIBS)
+    set(BUILD_SHARED_LIBS OFF)
+endif()
+
 if (CMAKE_C_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     add_compile_options(-fpermissive)
 endif()
