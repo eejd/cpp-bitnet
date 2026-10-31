@@ -110,7 +110,9 @@ def mean_nll(logits: np.ndarray, target_ids: list[int]) -> float:
 
 def evaluate_ppl(nll_ref: float, nll_eng: float, tol: dict) -> dict:
     if not (math.isfinite(nll_ref) and math.isfinite(nll_eng)):
-        return {"pass": False, "reasons": ["non-finite perplexity"], "ppl_ref": float("nan"), "ppl_engine": float("nan")}
+        return {"pass": False, "reasons": ["non-finite perplexity"],
+                "ppl_ref": math.exp(nll_ref) if math.isfinite(nll_ref) else float("nan"),
+                "ppl_engine": math.exp(nll_eng) if math.isfinite(nll_eng) else float("nan")}
     lr = nll_eng - nll_ref  # ln(ppl_eng/ppl_ref)
     ok = abs(lr) <= tol["perplexity"]["max_abs_log_ratio"]
     return {
