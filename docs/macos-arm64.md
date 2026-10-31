@@ -31,7 +31,7 @@ are applied automatically and need no flags:
 | what | why | where |
 |---|---|---|
 | `BUILD_SHARED_LIBS=OFF` on Apple | `libggml-base` references `quantize_i2_s` / `dequantize_row_i2_s`, which live in `libggml-cpu`; ld64 rejects the undefined symbols of the default shared build (#682, #641, #635) | `CMakeLists.txt` |
-| `GGML_METAL=OFF`, `GGML_BLAS=OFF` on Apple | no I2_S/TL1 kernels exist for Metal; with Metal built, creating the context aborts in `ggml_backend_sched_split_graph`; with the Accelerate/BLAS backend built, every prompt batch of >= 32 tokens is claimed by `ggml_backend_blas` and the process dies with SIGSEGV (#682 "SIGSEGV during prompt processing", #641) | `CMakeLists.txt` |
+| `GGML_METAL=OFF`, `GGML_BLAS=OFF` on Apple | no I2_S/TL1 kernels exist for Metal; with Metal built (BLAS off) creating the context aborts in `ggml_backend_sched_split_graph`; with Metal + Accelerate/BLAS built, prompt batches of >= 32 tokens are claimed by `ggml_backend_blas` and the process dies with SIGSEGV (#682 "SIGSEGV during prompt processing", #641); with BLAS built and Metal off there is no crash but the BLAS backend still claims those batches and returns garbage (synthetic gate: perplexity 4e27 vs 3.7e5, kernels otherwise correct) | `CMakeLists.txt` |
 | `patches/llama.cpp/0001-*.patch` | `src1_cont` is undeclared in `ggml-cpu.c` on every CPU with i8mm (M2 and later) (#618, #682, #641) | `cmake/ApplyLlamaPatches.cmake`, run at configure time |
 
 Override any of them explicitly (`-DBUILD_SHARED_LIBS=ON`, `-DGGML_METAL=ON`, ...) if you know why;
@@ -80,6 +80,7 @@ ggml/src/ggml-cpu/ggml-cpu.c:1495:40: error: use of undeclared identifier 'src1_
 
 # after building, Metal + BLAS backends on, prompt of >= 31 tokens, -ngl 0
 engine: fatal signal 11 ... ggml_backend_blas_graph_compute ... ggml_backend_sched_graph_compute_async
+# BLAS on, Metal off: no crash, wrong numbers for batches >= 32 tokens
 
 # Metal on, BLAS off
 ggml.c:1789: GGML_ASSERT(view_src == NULL || data_size == 0 || data_size + view_offs <= ggml_nbytes(view_src)) failed
