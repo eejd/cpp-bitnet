@@ -4,6 +4,7 @@
   python3.14 make_synthetic_model.py --out DIR [--seed 0]
 
   DIR/mlx/               config.json + model.safetensors  (what mlx_lm's `bitnet` model loads)
+  DIR/synthetic-f32.gguf same weights as float (input for `llama-quantize ... I2_S` tests)
   DIR/synthetic-i2s.gguf arch bitnet-b1.58, linear weights I2_S in the canonical 128/32 layout
                          (same packing as utils/convert-bitnet-embedding-to-gguf.py), f16 embedding,
                          f32 norms, tied output
@@ -101,33 +102,41 @@ def main() -> int:
         "rope_theta": a.rope_theta, "max_position_embeddings": 2048, "tie_word_embeddings": True,
         "quantization_config": {"quant_method": "bitnet"}}))
 
-    # ---- GGUF (I2_S)
-    g = gguf.GGUFWriter(str(out / "synthetic-i2s.gguf"), "bitnet-b1.58")
-    g.add_name("synthetic-bitnet-b1.58-tiny")
-    g.add_context_length(2048); g.add_embedding_length(H); g.add_block_count(L)
-    g.add_feed_forward_length(F); g.add_head_count(NH); g.add_head_count_kv(NKV)
-    g.add_layer_norm_rms_eps(a.eps); g.add_rope_freq_base(a.rope_theta); g.add_rope_dimension_count(HD)
-    g.add_uint32("general.file_type", 41)  # LLAMA_FTYPE_MOSTLY_I2_S
-    toks = ["<unk>", "<s>", "</s>"] + [f"<0x{i:02X}>" for i in range(256)]
-    types = [gguf.TokenType.UNKNOWN, gguf.TokenType.CONTROL, gguf.TokenType.CONTROL] + [gguf.TokenType.BYTE] * 256
-    extra = [chr(ord("a") + i) for i in range(26)] + ["\u2581" + c for c in "abcdefghijklmno"]
-    toks += extra[: V - len(toks)]; types += [gguf.TokenType.NORMAL] * (len(toks) - len(types))
-    assert len(toks) == V, (len(toks), V)
-    g.add_tokenizer_model("llama"); g.add_token_list(toks); g.add_token_scores([0.0] * V); g.add_token_types(types)
-    g.add_bos_token_id(1); g.add_eos_token_id(2); g.add_unk_token_id(0); g.add_add_bos_token(True)
-    g.add_tensor("token_embd.weight", emb.astype(np.float16))
-    g.add_tensor("output_norm.weight", out_norm)
-    for i, d in enumerate(layers):
-        g.add_tensor(f"blk.{i}.attn_norm.weight", d["attn_norm"]); g.add_tensor(f"blk.{i}.attn_sub_norm.weight", d["attn_sub_norm"])
-        g.add_tensor(f"blk.{i}.ffn_norm.weight", d["ffn_norm"]); g.add_tensor(f"blk.{i}.ffn_sub_norm.weight", d["ffn_sub_norm"])
-        for k, (m, kk) in shapes.items():
-            t, s = d[k]
-            packed = pack_canonical(t)
-            blob = np.zeros(m * kk // 4 + 32, dtype=np.uint8)
-            blob[: packed.size] = packed
-            blob[packed.size: packed.size + 4] = np.frombuffer(np.float32(s).tobytes(), dtype=np.uint8)
-            g.add_tensor(f"blk.{i}.{gg_names[k]}.weight", blob, raw_shape=(m, kk), raw_dtype=gguf.GGMLQuantizationType.I2_S)
-    g.write_header_to_file(); g.write_kv_data_to_file(); g.write_tensors_to_file(); g.close()
+    # ---- GGUF: I2_S written directly (canonical layout), and an f32 twin for llama-quantize tests
+    def write_gguf(path: Path, i2s: bool) -> None:
+        g = gguf.GGUFWriter(str(path), "bitnet-b1.58")
+        g.add_name("synthetic-bitnet-b1.58-tiny")
+        g.add_context_length(2048); g.add_embedding_length(H); g.add_block_count(L)
+        g.add_feed_forward_length(F); g.add_head_count(NH); g.add_head_count_kv(NKV)
+        g.add_layer_norm_rms_eps(a.eps); g.add_rope_freq_base(a.rope_theta); g.add_rope_dimension_count(HD)
+        g.add_uint32("general.file_type", 41 if i2s else 0)  # LLAMA_FTYPE_MOSTLY_I2_S / ALL_F32
+        toks = ["<unk>", "<s>", "</s>"] + [f"<0x{i:02X}>" for i in range(256)]
+        types = [gguf.TokenType.UNKNOWN, gguf.TokenType.CONTROL, gguf.TokenType.CONTROL] + [gguf.TokenType.BYTE] * 256
+        extra = [chr(ord("a") + i) for i in range(26)] + ["\u2581" + c for c in "abcdefghijklmno"]
+        toks += extra[: V - len(toks)]; types += [gguf.TokenType.NORMAL] * (len(toks) - len(types))
+        assert len(toks) == V, (len(toks), V)
+        g.add_tokenizer_model("llama"); g.add_token_list(toks); g.add_token_scores([0.0] * V); g.add_token_types(types)
+        g.add_bos_token_id(1); g.add_eos_token_id(2); g.add_unk_token_id(0); g.add_add_bos_token(True)
+        g.add_tensor("token_embd.weight", emb.astype(np.float16))
+        g.add_tensor("output_norm.weight", out_norm)
+        for i, d in enumerate(layers):
+            g.add_tensor(f"blk.{i}.attn_norm.weight", d["attn_norm"]); g.add_tensor(f"blk.{i}.attn_sub_norm.weight", d["attn_sub_norm"])
+            g.add_tensor(f"blk.{i}.ffn_norm.weight", d["ffn_norm"]); g.add_tensor(f"blk.{i}.ffn_sub_norm.weight", d["ffn_sub_norm"])
+            for k, (m, kk) in shapes.items():
+                t, s = d[k]
+                if i2s:
+                    packed = pack_canonical(t)
+                    blob = np.zeros(m * kk // 4 + 32, dtype=np.uint8)
+                    blob[: packed.size] = packed
+                    blob[packed.size: packed.size + 4] = np.frombuffer(np.float32(s).tobytes(), dtype=np.uint8)
+                    g.add_tensor(f"blk.{i}.{gg_names[k]}.weight", blob, raw_shape=(m, kk), raw_dtype=gguf.GGMLQuantizationType.I2_S)
+                else:
+                    w = (t.astype(np.float32) * s).astype(np.float32)
+                    g.add_tensor(f"blk.{i}.{gg_names[k]}.weight", w)
+        g.write_header_to_file(); g.write_kv_data_to_file(); g.write_tensors_to_file(); g.close()
+
+    write_gguf(out / "synthetic-i2s.gguf", True)
+    write_gguf(out / "synthetic-f32.gguf", False)   # same ternary*scale values as float (for llama-quantize ... I2_S)
 
     # ---- id-based gate inputs (byte tokens 3..258 behave like text bytes)
     ids = lambda s: [1] + [3 + b for b in s.encode()]
