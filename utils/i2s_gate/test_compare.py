@@ -1,13 +1,16 @@
-"""Unit tests of compare.py on synthetic data. Run: python3.14 -m unittest utils/i2s_gate/test_compare.py -v
+"""Unit tests of compare.py on synthetic data. Run: python3.14 utils/i2s_gate/test_compare.py -v
 
 They establish that the gate (a) accepts the documented quantization noise and (b) rejects each failure
 mode seen upstream: scrambled weights, constant output, NaN/garbage, SiLU-vs-relu^2-sized distortions.
 """
 import math
+import sys
 import unittest
+from pathlib import Path
 
 import numpy as np
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 import compare as C
 
 TOL = C.load_tolerances()

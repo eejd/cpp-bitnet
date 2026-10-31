@@ -53,7 +53,7 @@ Why not bit-equality: mlx_lm multiplies **float** activations with the ternary w
 quantizes each activation row to int8 (absmax) first. The tolerances allow that documented noise and are
 set so that every defect seen upstream (wrong weight layout, wrong +1 offset, constant output, SiLU instead
 of relu², NaN/garbage) fails by orders of magnitude; `test_compare.py` demonstrates this on synthetic data
-(`python3.14 -m unittest utils/i2s_gate/test_compare.py`). The tolerances are **not calibrated on a real
+(`python3.14 utils/i2s_gate/test_compare.py -v`). The tolerances are **not calibrated on a real
 engine/reference pair** (none existed when written). If the first real run is within a few percent of a
 bound, change `tolerances.json` only in a separate, explained commit.
 
