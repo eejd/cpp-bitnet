@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "registered": "2026-10-31, before any model-level gate run on this host (no GGUF/reference weights existed on disk at that time)",
+  "n_new_tokens": 16,
+  "teacher_forced": {
+    "near_tie_margin_logits": 0.25,
+    "min_top1_agreement_non_tie": 0.90,
+    "max_mean_kl_nats": 0.02,
+    "max_position_kl_nats": 0.25,
+    "min_position_cosine_centered": 0.99
+  },
+  "greedy_free_running": {
+    "min_matching_prefix": 12,
+    "divergence_excused_if_ref_margin_below": 0.25
+  },
+  "perplexity": {
+    "max_abs_log_ratio": 0.02,
+    "comment": "|ln(ppl_engine / ppl_reference)| <= 0.02, i.e. within 2 %"
+  },
+  "rationale": {
+    "reference_vs_engine_difference": "mlx_lm's BitLinear multiplies float activations by the ternary weights; bitnet.cpp quantizes each activation row to int8 (absmax, step amax/127) before the integer dot product. The gate therefore cannot demand bit-equality. Per-element activation error is ~0.3-1 % (upstream microsoft/BitNet#586 reports 0.3-1 % per element), accumulated over 30 layers.",
+    "near_tie_margin": "A top-1 flip is only excused when the reference's own top-1/top-2 logit gap is < 0.25, i.e. when a perturbation of that size could legitimately reorder them.",
+    "kl_bounds": "Mean KL(ref||engine) <= 0.02 nats corresponds to <= ~2 % perplexity change; honest int8-activation noise is expected to be roughly an order of magnitude smaller. A single position may reach 0.25 nats. These are NOT calibrated on a real engine/reference pair (none existed); they are chosen to reject any real defect (wrong layout, wrong offset, SiLU vs relu^2 give KL >> 1) while tolerating the documented quantization noise.",
+    "cosine": "Cosine similarity of mean-centered logits per position >= 0.99; garbage/scrambled weights give ~0.",
+    "perplexity": "Q6_K embeddings change wikitext ppl by +0.17 %, Q3_K by +3.1 % (src/README.md); 2 % allows int8-activation noise and rejects visible degradation. The comparison is paired (same ids, same positions), so sampling noise of the short text cancels.",
+    "non_finite": "Any NaN/Inf logit is an automatic failure."
+  }
+}
