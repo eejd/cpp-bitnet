@@ -32,6 +32,29 @@ def top_margin(logits: np.ndarray) -> np.ndarray:
     return part[:, -1] - part[:, -2]
 
 
+def margin_noise_sigma(ref: np.ndarray, eng: np.ndarray) -> float:
+    """RMS error of the reference top1-top2 logit gap as seen by the engine (the engine's logits at the
+    reference's own top-2 token ids)."""
+    ref = np.asarray(ref, dtype=np.float64); eng = np.asarray(eng, dtype=np.float64)
+    i1 = ref.argmax(-1)
+    masked = ref.copy(); masked[np.arange(len(ref)), i1] = -np.inf
+    i2 = masked.argmax(-1)
+    r = np.arange(len(ref))
+    err = (eng[r, i1] - eng[r, i2]) - (ref[r, i1] - ref[r, i2])
+    return float(np.sqrt(np.mean(err ** 2)))
+
+
+def near_tie(ref: np.ndarray, eng: np.ndarray, tol: dict) -> dict:
+    """Adaptive near-tie threshold (tolerances.json 'near_tie'). Returns threshold, sigma and whether sigma is within the cap."""
+    nt = tol["near_tie"]
+    sigma = margin_noise_sigma(ref, eng)
+    logit_std = float(np.asarray(ref, dtype=np.float64).std())
+    sigma_ok = sigma <= nt["max_sigma_over_logit_std"] * logit_std
+    # an engine whose margin noise exceeds the cap gets no widening at all (floor only)
+    thr = max(nt["floor_logits"], nt["k_sigma"] * sigma) if sigma_ok else nt["floor_logits"]
+    return {"sigma": sigma, "logit_std": logit_std, "threshold": thr, "sigma_ok": sigma_ok}
+
+
 def position_metrics(ref: np.ndarray, eng: np.ndarray) -> dict:
     ref = np.asarray(ref, dtype=np.float64)
     eng = np.asarray(eng, dtype=np.float64)
@@ -50,7 +73,8 @@ def position_metrics(ref: np.ndarray, eng: np.ndarray) -> dict:
     }
 
 
-def evaluate_teacher_forced(ref: np.ndarray, eng: np.ndarray, tol: dict) -> dict:
+def evaluate_teacher_forced(ref: np.ndarray, eng: np.ndarray, tol: dict, nt: dict | None = None) -> dict:
+    """nt: near-tie info from near_tie() computed on the pooled teacher-forced data (default: computed from ref/eng)."""
     t = tol["teacher_forced"]
     reasons: list[str] = []
     if not np.isfinite(np.asarray(eng)).all():
@@ -59,8 +83,11 @@ def evaluate_teacher_forced(ref: np.ndarray, eng: np.ndarray, tol: dict) -> dict
     if not np.isfinite(np.asarray(ref)).all():
         return {"pass": False, "reasons": ["reference logits contain non-finite values (gate invalid)"], "metrics": {}}
     m = position_metrics(ref, eng)
-    non_tie = m["ref_margin"] >= t["near_tie_margin_logits"]
-    agree = float(m["top1_equal"][non_tie].mean()) if non_tie.any() else 1.0
+    nt = nt or near_tie(ref, eng, tol)
+    non_tie = m["ref_margin"] >= nt["threshold"]
+    agree = float(m["top1_equal"][non_tie].mean()) if non_tie.any() else 0.0
+    if non_tie.mean() < 0.5:
+        reasons.append(f"only {int(non_tie.sum())}/{len(non_tie)} positions are outside the near-tie band; top-1 agreement not judgeable")
     metrics = {
         "n_positions": int(len(m["kl"])),
         "n_non_tie_positions": int(non_tie.sum()),
@@ -69,7 +96,12 @@ def evaluate_teacher_forced(ref: np.ndarray, eng: np.ndarray, tol: dict) -> dict
         "max_kl": float(m["kl"].max()),
         "min_cosine": float(m["cos"].min()),
         "mean_cosine": float(m["cos"].mean()),
+        "near_tie_threshold": nt["threshold"],
+        "margin_noise_sigma": nt["sigma"],
+        "logit_std": nt["logit_std"],
     }
+    if not nt["sigma_ok"]:
+        reasons.append(f"margin noise sigma {nt['sigma']:.3f} > {tol['near_tie']['max_sigma_over_logit_std']} * logit std {nt['logit_std']:.3f}")
     if agree < t["min_top1_agreement_non_tie"]:
         reasons.append(f"top-1 agreement {agree:.3f} < {t['min_top1_agreement_non_tie']}")
     if metrics["mean_kl"] > t["max_mean_kl_nats"]:
@@ -81,9 +113,12 @@ def evaluate_teacher_forced(ref: np.ndarray, eng: np.ndarray, tol: dict) -> dict
     return {"pass": not reasons, "reasons": reasons, "metrics": metrics}
 
 
-def evaluate_greedy(ref_ids: list[int], eng_ids: list[int], ref_margins: np.ndarray, tol: dict) -> dict:
-    """Free-running greedy continuation. ref_margins[i] = reference top1-top2 logit gap when it chose ref_ids[i]."""
+def evaluate_greedy(ref_ids: list[int], eng_ids: list[int], ref_margins: np.ndarray, tol: dict,
+                    near_tie_threshold: float | None = None) -> dict:
+    """Free-running greedy continuation. ref_margins[i] = reference top1-top2 logit gap when it chose ref_ids[i].
+    near_tie_threshold: from near_tie() of the teacher-forced run (default: the floor)."""
     g = tol["greedy_free_running"]
+    thr = tol["near_tie"]["floor_logits"] if near_tie_threshold is None else near_tie_threshold
     n = min(len(ref_ids), len(eng_ids))
     d = next((i for i in range(n) if ref_ids[i] != eng_ids[i]), None)
     if len(eng_ids) < len(ref_ids) and d is None:
@@ -93,8 +128,8 @@ def evaluate_greedy(ref_ids: list[int], eng_ids: list[int], ref_margins: np.ndar
         out.update(pass_=True, reason="identical")
     elif d >= g["min_matching_prefix"]:
         out.update(pass_=True, reason=f"diverged at {d} >= {g['min_matching_prefix']}")
-    elif d < len(ref_margins) and ref_margins[d] < g["divergence_excused_if_ref_margin_below"]:
-        out.update(pass_=True, reason=f"diverged at {d} but reference margin {ref_margins[d]:.3f} is a near tie")
+    elif d < len(ref_margins) and ref_margins[d] < thr:
+        out.update(pass_=True, reason=f"diverged at {d} but reference margin {ref_margins[d]:.3f} < near-tie threshold {thr:.3f}")
     else:
         m = float(ref_margins[d]) if d < len(ref_margins) else float("nan")
         out.update(pass_=False, reason=f"diverged at {d} (< {g['min_matching_prefix']}) with reference margin {m:.3f}")

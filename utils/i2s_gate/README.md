@@ -44,8 +44,8 @@ every position, from which both sides compute perplexity on the same ids.
 
 | check | pass rule (see `tolerances.json`) |
 |---|---|
-| teacher-forced, prompts pooled and perplexity text | no NaN/Inf; top-1 agreement >= 0.90 on positions where the reference's own top1-top2 gap >= 0.25; mean KL(ref‖engine) <= 0.02 nats; max per-position KL <= 0.25; min centered-logit cosine >= 0.99 |
-| free-running greedy, per prompt | >= 12 of 16 tokens identical, or the first divergence is at a reference near tie (gap < 0.25) |
+| teacher-forced, prompts pooled and perplexity text | no NaN/Inf; top-1 agreement >= 0.90 on positions outside the near-tie band (reference top1-top2 gap >= max(0.25, 4·sigma), sigma = measured RMS error of that gap in the same run, capped at 10 % of the logit std - see `tolerances.json` history); mean KL(ref‖engine) <= 0.02 nats; max per-position KL <= 0.25; min centered-logit cosine >= 0.99 |
+| free-running greedy, per prompt | >= 12 of 16 tokens identical, or the first divergence is at a reference near tie (same band) |
 | perplexity | `|ln(ppl_engine/ppl_ref)| <= 0.02` |
 | tokenizer parity | engine ids == reference ids |
 

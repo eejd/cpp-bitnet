@@ -93,13 +93,13 @@ def main() -> int:
         for k in shapes:
             t, s = d[k]
             w[p + hf_names[k] + ".weight"] = mx.array(pack_mlx(t))
-            w[p + hf_names[k] + ".weight_scale"] = mx.array(np.array([1.0 / s], dtype=np.float32))  # inverted by mlx_lm
+            w[p + hf_names[k] + ".weight_scale"] = mx.array(np.array([s], dtype=np.float32))  # mlx_lm bitnet.py: BitLinear built with invert_weight_scales=False -> multiplier
     mx.save_safetensors(str(out / "mlx" / "model.safetensors"), w)
     (out / "mlx" / "config.json").write_text(json.dumps({
         "model_type": "bitnet", "hidden_size": H, "num_hidden_layers": L, "intermediate_size": F,
         "num_attention_heads": NH, "num_key_value_heads": NKV, "rms_norm_eps": a.eps, "vocab_size": V,
         "rope_theta": a.rope_theta, "max_position_embeddings": 2048, "tie_word_embeddings": True,
-        "quantization_config": {"quant_method": "bitnet", "linear_class": "bitlinear"}}))
+        "quantization_config": {"quant_method": "bitnet"}}))
 
     # ---- GGUF (I2_S)
     g = gguf.GGUFWriter(str(out / "synthetic-i2s.gguf"), "bitnet-b1.58")

@@ -92,6 +92,22 @@ class TeacherForced(unittest.TestCase):
             eng2[i, j], eng2[i, k] = eng2[i, k], eng2[i, j]
         self.assertFalse(C.evaluate_teacher_forced(ref2, eng2, TOL)["pass"])
 
+    def test_adaptive_near_tie_follows_measured_noise_but_is_capped(self):
+        rng = np.random.default_rng(7)
+        # engine noise comparable to the synthetic end-to-end run (logit std ~4, noise ~0.12)
+        ref = make_ref(seed=3, scale=3.0) * (4.0 / make_ref(seed=3, scale=3.0).std())
+        eng = ref + rng.normal(0, 0.12, ref.shape)
+        nt = C.near_tie(ref, eng, TOL)
+        self.assertGreater(nt["threshold"], TOL["near_tie"]["floor_logits"])   # wider than the floor
+        self.assertTrue(nt["sigma_ok"])
+        self.assertTrue(C.evaluate_teacher_forced(ref, eng, TOL)["pass"])
+        # heavy noise: sigma exceeds 10 % of the logit std -> cannot excuse itself, fails on the cap
+        eng2 = ref + rng.normal(0, 2.0, ref.shape)
+        nt2 = C.near_tie(ref, eng2, TOL)
+        self.assertFalse(nt2["sigma_ok"])
+        r = C.evaluate_teacher_forced(ref, eng2, TOL)
+        self.assertFalse(r["pass"])
+
     def test_shape_mismatch_raises(self):
         with self.assertRaises(ValueError):
             C.evaluate_teacher_forced(self.ref, self.ref[:-1], TOL)
@@ -118,6 +134,12 @@ class Greedy(unittest.TestCase):
 
     def test_constant_repeat_fails(self):  # '@@@@@@' style output
         self.assertFalse(C.evaluate_greedy(list(range(16)), [31] * 16, self.margins, TOL)["pass"])
+
+    def test_threshold_argument_is_used(self):
+        m = self.margins.copy(); m[2] = 0.4
+        e = list(range(16)); e[2] = 999
+        self.assertFalse(C.evaluate_greedy(list(range(16)), e, m, TOL)["pass"])                         # floor 0.25
+        self.assertTrue(C.evaluate_greedy(list(range(16)), e, m, TOL, near_tie_threshold=0.6)["pass"])  # measured noise
 
     def test_truncated_fails(self):
         self.assertFalse(C.evaluate_greedy(list(range(16)), list(range(3)), self.margins, TOL)["pass"])

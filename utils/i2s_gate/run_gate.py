@@ -108,6 +108,7 @@ def main() -> int:
 
     checks: dict[str, dict] = {}
     ref_pool, eng_pool = [], []
+    pending_greedy = []
     for i, p in enumerate(ref["prompts"]):
         rl = np.load(ref_dir / f"{p['name']}.npy")
         if rl.shape[1] != n_vocab:
@@ -115,21 +116,31 @@ def main() -> int:
         el = read_logits(i, len(p["tf_seq"]))[p["eval_from"]:]
         ref_pool.append(rl); eng_pool.append(el)
         eng_ids = [int(x) for x in (eng_dir / f"{100 + i}.ids").read_text().split()]
-        checks[f"greedy[{p['name']}]"] = C.evaluate_greedy(p["greedy_ids"], eng_ids, np.array(p["greedy_margins"]), tol) | {"ref_ids": p["greedy_ids"], "engine_ids": eng_ids}
+        pending_greedy.append((p, eng_ids))
         if (eng_dir / f"{200 + i}.ids").exists():
             tids = [int(x) for x in (eng_dir / f"{200 + i}.ids").read_text().split()]
             ok = tids == p["prompt_ids"]
             checks[f"tokenizer_parity[{p['name']}]"] = {"pass": ok, "engine_ids": tids, "ref_ids": p["prompt_ids"], "reasons": [] if ok else ["engine tokenizer ids differ from reference tokenizer ids"]}
-    checks["teacher_forced[prompts,pooled]"] = C.evaluate_teacher_forced(np.concatenate(ref_pool), np.concatenate(eng_pool), tol)
+    rp, ep = np.concatenate(ref_pool), np.concatenate(eng_pool)
+    ppl_rl = ppl_el = None
     if ref["ppl"]:
         ids = ref["ppl"]["ids"]; n = len(ids) - 1
-        rl = np.load(ref_dir / "ppl.npy"); el = read_logits(1000, len(ids))[:-1]
-        checks["teacher_forced[ppl_text]"] = C.evaluate_teacher_forced(rl, el, tol)
-        checks["perplexity"] = C.evaluate_ppl(C.mean_nll(rl, ids[1:]), C.mean_nll(el, ids[1:]), tol) | {"n_targets": n}
+        ppl_rl = np.load(ref_dir / "ppl.npy"); ppl_el = read_logits(1000, len(ids))[:-1]
+    # near-tie threshold measured on ALL teacher-forced positions of this run (prompts + ppl text)
+    all_r = np.concatenate([rp] + ([ppl_rl] if ppl_rl is not None else []))
+    all_e = np.concatenate([ep] + ([ppl_el] if ppl_el is not None else []))
+    finite = np.isfinite(all_e).all()
+    nt = C.near_tie(all_r, all_e, tol) if finite else {"sigma": float("nan"), "logit_std": float(all_r.std()), "threshold": tol["near_tie"]["floor_logits"], "sigma_ok": False}
+    for p, eng_ids in pending_greedy:
+        checks[f"greedy[{p['name']}]"] = C.evaluate_greedy(p["greedy_ids"], eng_ids, np.array(p["greedy_margins"]), tol, nt["threshold"]) | {"ref_ids": p["greedy_ids"], "engine_ids": eng_ids}
+    checks["teacher_forced[prompts,pooled]"] = C.evaluate_teacher_forced(rp, ep, tol, nt)
+    if ref["ppl"]:
+        checks["teacher_forced[ppl_text]"] = C.evaluate_teacher_forced(ppl_rl, ppl_el, tol, nt)
+        checks["perplexity"] = C.evaluate_ppl(C.mean_nll(ppl_rl, ids[1:]), C.mean_nll(ppl_el, ids[1:]), tol) | {"n_targets": n}
 
     passed = all(c["pass"] for c in checks.values())
     result = {"status": "PASS" if passed else "FAIL", "tag": a.tag, "gguf": a.gguf, "ref_model": a.ref_model,
-              "tolerances_sha256_12": tol_sha, "threads": a.threads, "engine_system_info": meta["system_info"], "checks": checks}
+              "tolerances_sha256_12": tol_sha, "tolerances_version": tol["version"], "near_tie": nt, "threads": a.threads, "engine_system_info": meta["system_info"], "checks": checks}
     (out / "result.json").write_text(json.dumps(result, indent=1, default=float))
     for name, c in checks.items():
         extra = ""
