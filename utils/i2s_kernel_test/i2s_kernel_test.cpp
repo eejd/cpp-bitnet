@@ -255,10 +255,15 @@ static void test_mul_mat(int nth) {
 
         // reference 1: exact emulation of the documented pipeline (int8 activation quantization)
         // reference 2: float W @ x (no activation quantization) -- loose, catches garbage
-        double max_rel_emul = 0, l2num = 0, l2den = 0;
+        double max_rel_emul = 0, l2num = 0, l2den = 0, mean_amax_over_rms = 0;
         for (int n = 0; n < c.N; n++) {
             std::vector<int8_t> q; float sc; int32_t sum;
             emulate_quantize_row_i8(&x[(size_t) n * c.K], c.K, q, sc, sum);
+            {
+                double amax = 0, ss = 0;
+                for (int k = 0; k < c.K; k++) { amax = fmax(amax, fabs(x[(size_t) n * c.K + k])); ss += (double) x[(size_t) n * c.K + k] * x[(size_t) n * c.K + k]; }
+                mean_amax_over_rms += amax / sqrt(ss / c.K) / c.N;
+            }
             for (int m = 0; m < c.M; m++) {
                 long long dot = 0; double fdot = 0;
                 for (int k = 0; k < c.K; k++) {
@@ -274,11 +279,18 @@ static void test_mul_mat(int nth) {
             }
         }
         double rel_l2 = sqrt(l2num / (l2den + 1e-30));
-        // tolerances (chosen before the first run): emulation must agree to float rounding (1e-4 relative);
-        // vs. float reference the int8 activation quantization gives ~0.5% rel-L2, garbage gives >= ~100%.
-        bool ok = max_rel_emul < 1e-4 && rel_l2 < 0.03;
+        // Tolerances.
+        //  (1) vs. exact emulation of the int8 pipeline: float rounding only -> 1e-4 relative.
+        //  (2) vs. float W@x: the only difference is per-row absmax int8 activation quantization,
+        //      step = amax/127, uniform error std = step/sqrt(12). For ternary W the output error
+        //      relative to the output rms is ~ (amax/rms(x)) / (127*sqrt(12)); allow 4x that
+        //      (small-M sampling noise). A wrong layout/offset gives O(1) (>= ~0.7 in practice).
+        //      (A fixed 0.03 used in the first draft was wrong for inputs with an outlier and
+        //      flagged a correct kernel; it was replaced by this derived bound.)
+        double bound = 4.0 * mean_amax_over_rms / (127.0 * sqrt(12.0));
+        bool ok = max_rel_emul < 1e-4 && rel_l2 < bound;
         report(ok, fmt("L2 mul_mat I2_S K=%d M=%d N=%d threads=%d", c.K, c.M, c.N, nth).c_str(),
-               fmt("max rel err vs emulation=%.3g, rel-L2 vs float W@x=%.3g", max_rel_emul, rel_l2).c_str());
+               fmt("max rel err vs emulation=%.3g, rel-L2 vs float W@x=%.3g (bound %.3g)", max_rel_emul, rel_l2, bound).c_str());
         ggml_free(ctx);
     }
 }
