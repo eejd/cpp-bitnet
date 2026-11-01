@@ -1,0 +1,10 @@
+{
+  "comment": "Fixed gate prompts. 'text' entries are tokenized with the reference tokenizer (HF/mlx_lm); 'ids' entries are used as-is (synthetic models).",
+  "prompts": [
+    {"name": "capital",  "text": "The capital of France is"},
+    {"name": "boiling",  "text": "Water boils at a temperature of"},
+    {"name": "code",     "text": "def fibonacci(n):\n    "},
+    {"name": "story",    "text": "Once upon a time, in a small village by the sea,"},
+    {"name": "math",     "text": "Question: What is 12 plus 30?\nAnswer:"}
+  ]
+}
