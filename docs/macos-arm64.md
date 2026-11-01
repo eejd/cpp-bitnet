@@ -10,11 +10,12 @@ Tracking issue: eejd/cpp-bitnet#2 (upstream reports microsoft/BitNet #682, #641,
 > agreement 1.000, mean KL 0.0026 nats, perplexity 7.1785 vs 7.1532 on the gate text, greedy continuations
 > equal except at reference near-ties (tolerances and method: `utils/i2s_gate/README.md` on
 > `test/i2s-correctness-gate`, eejd/cpp-bitnet#3). Without 0002/0003 the output is garbage
-> (`The capital of France is@@@@@@@@@@@@@@@@`). Known gaps: `llama-quantize ... I2_S` (what `setup_env.py` uses to
-> make a local GGUF) is not usable on this tree (`invalid ftype 'I2_S'`; even with isHuangXin/llama.cpp#2 its
-> packing differs from the canonical layout), and the official GGUF has no `tokenizer.ggml.pre`, so prompts
-> containing e.g. `(n):\n` tokenize differently from the Llama-3 tokenizer (`--override-kv tokenizer.ggml.pre=str:llama-bpe`
-> fixes that).
+> (`The capital of France is@@@@@@@@@@@@@@@@`). `patches/llama.cpp/0004` makes `llama-quantize ... I2_S`
+> (what `setup_env.py` uses to make a local GGUF) usable: it was `invalid ftype 'I2_S'`, and
+> isHuangXin/llama.cpp#2 wrote a non-canonical packing. With 0004 the 14 I2_S tensors of the synthetic f32 model
+> are byte-identical to the canonical packing at 1, 4 and default threads, and the gate passes on that file.
+> Known gap: the official GGUF has no `tokenizer.ggml.pre`, so prompts containing e.g. `(n):\n` tokenize
+> differently from the Llama-3 tokenizer (`--override-kv tokenizer.ggml.pre=str:llama-bpe` fixes that).
 
 ## Recipe (no conda, out-of-tree build)
 
@@ -39,7 +40,7 @@ are applied automatically and need no flags:
 | `BUILD_SHARED_LIBS=OFF` on Apple | `libggml-base` references `quantize_i2_s` / `dequantize_row_i2_s`, which live in `libggml-cpu`; ld64 rejects the undefined symbols of the default shared build (#682, #641, #635) | `CMakeLists.txt` |
 | `GGML_METAL=OFF`, `GGML_BLAS=OFF` on Apple | no I2_S/TL1 kernels exist for Metal; with Metal built (BLAS off) creating the context aborts in `ggml_backend_sched_split_graph`; with Metal + Accelerate/BLAS built, prompt batches of >= 32 tokens are claimed by `ggml_backend_blas` and the process dies with SIGSEGV (#682 "SIGSEGV during prompt processing", #641); with BLAS built and Metal off there is no crash but the BLAS backend still claims those batches and returns garbage (synthetic gate: perplexity 4e27 vs 3.7e5, kernels otherwise correct) | `CMakeLists.txt` |
 | `patches/llama.cpp/0001-*.patch` | `src1_cont` is undeclared in `ggml-cpu.c` on every CPU with i8mm (M2 and later) (#618, #682, #641) | `cmake/ApplyLlamaPatches.cmake`, run at configure time |
-| `patches/llama.cpp/0002-*.patch`, `0003-*.patch` | I2_S kernel layout/offset/calling-convention fix; squared-ReLU FFN (see status above) | same |
+| `patches/llama.cpp/0002-*.patch`, `0003-*.patch`, `0004-*.patch` | I2_S kernel layout/offset/calling-convention fix; squared-ReLU FFN; `llama-quantize ... I2_S` with the canonical layout (see status above) | same |
 
 Override any of them explicitly (`-DBUILD_SHARED_LIBS=ON`, `-DGGML_METAL=ON`, ...) if you know why;
 `-DBITNET_APPLY_LLAMA_PATCHES=OFF` skips the patch queue (and with it the correctness fixes).
