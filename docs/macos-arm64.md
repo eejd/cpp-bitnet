@@ -14,8 +14,12 @@ Tracking issue: eejd/cpp-bitnet#2 (upstream reports microsoft/BitNet #682, #641,
 > (what `setup_env.py` uses to make a local GGUF) usable: it was `invalid ftype 'I2_S'`, and
 > isHuangXin/llama.cpp#2 wrote a non-canonical packing. With 0004 the 14 I2_S tensors of the synthetic f32 model
 > are byte-identical to the canonical packing at 1, 4 and default threads, and the gate passes on that file.
-> Known gap: the official GGUF has no `tokenizer.ggml.pre`, so prompts containing e.g. `(n):\n` tokenize
-> differently from the Llama-3 tokenizer (`--override-kv tokenizer.ggml.pre=str:llama-bpe` fixes that).
+> The official GGUF has no `tokenizer.ggml.pre`; `patches/llama.cpp/0005` makes the loader assume `llama-bpe` for
+> exactly that case (arch `bitnet-b1.58`, 128256 tokens, 280147 merges, no pre key; the merge table is identical to
+> Llama-3.2's). Without it, prompts containing e.g. `(n):\n` tokenized differently from the Llama-3 tokenizer and the
+> gate's tokenizer parity failed on 2 of 5 prompts; with it all 5 pass on the unmodified file. Any other GGUF
+> without the key still gets the "missing pre-tokenizer" warning and the `default` regexes. The converter already
+> writes `llama-bpe` for this tokenizer (its check-hash matches Meta-Llama-3), so only existing files needed this.
 
 ## Recipe (no conda, out-of-tree build)
 
@@ -40,7 +44,7 @@ are applied automatically and need no flags:
 | `BUILD_SHARED_LIBS=OFF` on Apple | `libggml-base` references `quantize_i2_s` / `dequantize_row_i2_s`, which live in `libggml-cpu`; ld64 rejects the undefined symbols of the default shared build (#682, #641, #635) | `CMakeLists.txt` |
 | `GGML_METAL=OFF`, `GGML_BLAS=OFF` on Apple | no I2_S/TL1 kernels exist for Metal; with Metal built (BLAS off) creating the context aborts in `ggml_backend_sched_split_graph`; with Metal + Accelerate/BLAS built, prompt batches of >= 32 tokens are claimed by `ggml_backend_blas` and the process dies with SIGSEGV (#682 "SIGSEGV during prompt processing", #641); with BLAS built and Metal off there is no crash but the BLAS backend still claims those batches and returns garbage (synthetic gate: perplexity 4e27 vs 3.7e5, kernels otherwise correct) | `CMakeLists.txt` |
 | `patches/llama.cpp/0001-*.patch` | `src1_cont` is undeclared in `ggml-cpu.c` on every CPU with i8mm (M2 and later) (#618, #682, #641) | `cmake/ApplyLlamaPatches.cmake`, run at configure time |
-| `patches/llama.cpp/0002-*.patch`, `0003-*.patch`, `0004-*.patch` | I2_S kernel layout/offset/calling-convention fix; squared-ReLU FFN; `llama-quantize ... I2_S` with the canonical layout (see status above) | same |
+| `patches/llama.cpp/0002-*.patch` ... `0005-*.patch` | I2_S kernel layout/offset/calling-convention fix; squared-ReLU FFN; `llama-quantize ... I2_S` with the canonical layout; `llama-bpe` pre-tokenizer fallback for the official BitNet GGUF (see status above) | same |
 
 Override any of them explicitly (`-DBUILD_SHARED_LIBS=ON`, `-DGGML_METAL=ON`, ...) if you know why;
 `-DBITNET_APPLY_LLAMA_PATCHES=OFF` skips the patch queue (and with it the correctness fixes).
