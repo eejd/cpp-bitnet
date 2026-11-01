@@ -1,0 +1,26 @@
+diff --git a/src/llama-vocab.cpp b/src/llama-vocab.cpp
+index 2b546c495..74be0ab8a 100644
+--- a/src/llama-vocab.cpp
++++ b/src/llama-vocab.cpp
+@@ -2108,6 +2108,21 @@ void llama_vocab::impl::load(llama_model_loader & ml, const LLM_KV & kv) {
+             add_space_prefix = false;
+             escape_whitespaces = false;
+             clean_spaces = true;
++            if (tokenizer_pre.empty()) {
++                // The official BitNet b1.58 2B4T GGUF ships the Llama-3 BPE vocabulary (128256 tokens, 280147
++                // merges, identical merge table) but no tokenizer.ggml.pre. Without it the generic regexes
++                // split text differently from the Llama-3 ones the model was trained with. Only files that
++                // can be identified as that tokenizer get the fallback; everything else keeps the warning.
++                std::string general_arch;
++                ml.get_key(LLM_KV_GENERAL_ARCHITECTURE, general_arch, false);
++                const int tokens_keyidx = gguf_find_key(ctx, kv(LLM_KV_TOKENIZER_LIST).c_str());
++                const int merges_keyidx = gguf_find_key(ctx, kv(LLM_KV_TOKENIZER_MERGES).c_str());
++                if (general_arch == "bitnet-b1.58" && tokens_keyidx != -1 && merges_keyidx != -1 &&
++                        gguf_get_arr_n(ctx, tokens_keyidx) == 128256 && gguf_get_arr_n(ctx, merges_keyidx) == 280147) {
++                    LLAMA_LOG_WARN("%s: tokenizer.ggml.pre is missing; assuming 'llama-bpe' for bitnet-b1.58 with the Llama-3 vocabulary\n", __func__);
++                    tokenizer_pre = "llama-bpe";
++                }
++            }
+             if (tokenizer_pre.empty()) {
+                 LLAMA_LOG_WARN("%s: missing pre-tokenizer type, using: 'default'\n", __func__);
+                 LLAMA_LOG_WARN("%s:                                             \n", __func__);

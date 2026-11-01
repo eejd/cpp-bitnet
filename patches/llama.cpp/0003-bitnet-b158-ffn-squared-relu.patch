@@ -1,0 +1,15 @@
+diff --git a/src/models/bitnet.cpp b/src/models/bitnet.cpp
+index 985c8d6fc..c4014e3f5 100644
+--- a/src/models/bitnet.cpp
++++ b/src/models/bitnet.cpp
+@@ -130,7 +130,9 @@ llama_model_bitnet::graph::graph(const llama_model & model, const llm_graph_para
+                 model.layers[il].ffn_gate, NULL, model.layers[il].ffn_gate_s,
+                 NULL,                      NULL, NULL,
+                 NULL,
+-                LLM_FFN_SILU, LLM_FFN_PAR, il);
++                // BitNet b1.58 2B4T (BitNetForCausalLM, hidden_act = relu2) uses squared ReLU on the gate
++                // branch: down(ffn_sub_norm(relu(gate)^2 * up)). SiLU here is reported to give a ~6x perplexity regression (microsoft/BitNet#588).
++                arch == LLM_ARCH_BITNET_B158 ? LLM_FFN_RELU_SQR : LLM_FFN_SILU, LLM_FFN_PAR, il);
+         cb(cur, "ffn_sub_out", il);
+ 
+         cur = build_norm(cur,

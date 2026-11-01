@@ -1,0 +1,100 @@
+diff --git a/ggml/src/ggml-cpu/quants.c b/ggml/src/ggml-cpu/quants.c
+index 11af2b818..25fe8d0d5 100644
+--- a/ggml/src/ggml-cpu/quants.c
++++ b/ggml/src/ggml-cpu/quants.c
+@@ -1357,7 +1357,10 @@ void dequantize_row_i2_s(const uint8_t * x, float * y, int64_t n, const float i2
+ 
+ size_t quantize_i2_s(const float * src, void * dst, int64_t nrow, int64_t n_per_row, const float * quant_weights) {
+     (void)quant_weights;
+-    int64_t n = nrow * n_per_row;
++    // The layout (and the single per-tensor scale stored after the packed data) is whole-tensor:
++    // callers must pass the complete tensor in one call (see llama_tensor_quantize_impl).
++    GGML_ASSERT(n_per_row % 128 == 0 && "i2_s requires rows divisible by 128");
++    const int64_t n = nrow * n_per_row;
+ 
+     double max = 0.0;
+     for (int64_t i = 0; i < n; i++) {
+@@ -1368,6 +1371,8 @@ size_t quantize_i2_s(const float * src, void * dst, int64_t nrow, int64_t n_per_
+     uint8_t * q = (uint8_t *)dst;
+     memset(q, 0, n / 4);
+ 
++    // Canonical layout (same as dequantize_row_i2_s and the vec_dot kernels): every 128 elements
++    // form a 32-byte group; byte gp holds elements gp, 32+gp, 64+gp, 96+gp at bits 6, 4, 2, 0.
+     for (int64_t i = 0; i < n; i++) {
+         uint8_t val;
+         if (fabs((double)src[i]) < 1e-6) {
+@@ -1375,13 +1380,17 @@ size_t quantize_i2_s(const float * src, void * dst, int64_t nrow, int64_t n_per_
+         } else {
+             val = ((double)src[i] * max > 0) ? 2 : 0; // maps to +1 or -1
+         }
+-        int byte_idx = i / 4;
+-        int bit_pos = 6 - 2 * (i % 4);
+-        q[byte_idx] |= (val << bit_pos);
++        const int64_t group = i >> 7;          // 128-element group
++        const int     idx   = (int)(i & 127);
++        const int     field = idx >> 5;        // 0..3
++        const int     gp    = idx & 31;
++        q[group * 32 + gp] |= (uint8_t)(val << (6 - 2 * field));
+     }
+ 
+-    float * scale_ptr = (float *)(q + n / 4);
+-    scale_ptr[0] = (float)max;
++    // 32-byte trailer: the float scale, then zero padding (deterministic output)
++    memset(q + n / 4, 0, 32);
++    const float scale = (float)max;
++    memcpy(q + n / 4, &scale, sizeof(scale));
+ 
+     return nrow * n_per_row / 4 + 32;
+ }
+diff --git a/ggml/src/ggml-quants.c b/ggml/src/ggml-quants.c
+index 08dd367c2..1ab121923 100644
+--- a/ggml/src/ggml-quants.c
++++ b/ggml/src/ggml-quants.c
+@@ -5578,6 +5578,8 @@ bool ggml_validate_row_data(enum ggml_type type, const void * data, size_t nbyte
+         case GGML_TYPE_I16:
+         case GGML_TYPE_I32:
+         case GGML_TYPE_I64:
++        // I2_S: packed 2-bit codes plus a float scale; no float lanes to check
++        case GGML_TYPE_I2_S:
+             // nothing to validate
+             break;
+         default:
+diff --git a/src/llama-quant.cpp b/src/llama-quant.cpp
+index 847e79f46..12bc8d7dd 100644
+--- a/src/llama-quant.cpp
++++ b/src/llama-quant.cpp
+@@ -800,6 +800,7 @@ ggml_type llama_ftype_get_default_type(llama_ftype ftype) {
+         case LLAMA_FTYPE_MOSTLY_BF16: return GGML_TYPE_BF16;
+         case LLAMA_FTYPE_ALL_F32:     return GGML_TYPE_F32;
+         case LLAMA_FTYPE_MOSTLY_Q1_0: return GGML_TYPE_Q1_0;
++        case LLAMA_FTYPE_MOSTLY_I2_S: return GGML_TYPE_I2_S;
+ 
+         case LLAMA_FTYPE_MOSTLY_MXFP4_MOE: return GGML_TYPE_MXFP4;
+ 
+@@ -1235,7 +1236,13 @@ static void llama_model_quantize_impl(const std::string & fname_inp, const std::
+ 
+                 const int64_t nelements_matrix = tensor->ne[0] * tensor->ne[1];
+                 const int64_t nchunk = (nelements_matrix + chunk_size - 1)/chunk_size;
+-                const int64_t nthread_use = nthread > 1 ? std::max((int64_t)1, std::min((int64_t)nthread, nchunk)) : 1;
++                // I2_S stores one scale per tensor after the packed data, so the tensor must be
++                // quantized in a single call: no row chunking, no threads, no expert slices.
++                const bool whole_tensor = new_type == GGML_TYPE_I2_S;
++                if (whole_tensor && tensor->ne[2] != 1) {
++                    throw std::runtime_error(format("I2_S needs 2D tensors, but %s has ne[2] = %" PRId64, tensor->name, tensor->ne[2]));
++                }
++                const int64_t nthread_use = !whole_tensor && nthread > 1 ? std::max((int64_t)1, std::min((int64_t)nthread, nchunk)) : 1;
+ 
+                 // quantize each expert separately since they have different importance matrices
+                 new_size = 0;
+diff --git a/tools/quantize/quantize.cpp b/tools/quantize/quantize.cpp
+index 840eefc2f..b69ddebf0 100644
+--- a/tools/quantize/quantize.cpp
++++ b/tools/quantize/quantize.cpp
+@@ -33,6 +33,7 @@ struct quant_option {
+ 
+ static const std::vector<quant_option> QUANT_OPTIONS = {
+     { "Q1_0",     LLAMA_FTYPE_MOSTLY_Q1_0,     " 1.125 bpw quantization",           },
++    { "I2_S",     LLAMA_FTYPE_MOSTLY_I2_S,     " 2 bpw ternary quantization (BitNet b1.58; weights must already be ternary * scale)", },
+     { "Q4_0",     LLAMA_FTYPE_MOSTLY_Q4_0,     " 4.34G, +0.4685 ppl @ Llama-3-8B",  },
+     { "Q4_1",     LLAMA_FTYPE_MOSTLY_Q4_1,     " 4.78G, +0.4511 ppl @ Llama-3-8B",  },
+     { "MXFP4_MOE",LLAMA_FTYPE_MOSTLY_MXFP4_MOE," MXFP4 MoE",  },
