@@ -32,11 +32,39 @@ if (GGML_BITNET_X86_TL2)
     add_compile_definitions(GGML_BITNET_X86_TL2)
 endif()
 
+# ggml.c (ggml-base) references quantize_i2_s / dequantize_row_i2_s, which are
+# defined in ggml-cpu/quants.c (ggml-cpu). ld64 does not allow undefined symbols
+# in a shared library, so the default shared build fails to link libggml-base on
+# macOS (microsoft/BitNet #682, #641, #635). Default to static libraries there;
+# an explicit -DBUILD_SHARED_LIBS=ON is still honoured.
+if (APPLE AND NOT DEFINED BUILD_SHARED_LIBS)
+    set(BUILD_SHARED_LIBS OFF)
+endif()
+
+# bitnet.cpp has no Metal kernels (I2_S / TL1 are CPU only). With the Metal backend built, creating a
+# llama_context for an I2_S model aborts in ggml_backend_sched_split_graph (GGML_ASSERT in
+# ggml_new_tensor_impl via ggml_view_tensor) and, with the Accelerate/BLAS backend built,
+# ggml_backend_blas claims I2_S MUL_MAT for batches >= 32 tokens and crashes with SIGSEGV
+# (microsoft/BitNet #682, #641). Build the CPU backend only on macOS unless the user asks otherwise.
+if (APPLE)
+    if (NOT DEFINED GGML_METAL)
+        set(GGML_METAL OFF)
+    endif()
+    if (NOT DEFINED GGML_BLAS)
+        set(GGML_BLAS OFF)
+    endif()
+endif()
+
 if (CMAKE_C_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     add_compile_options(-fpermissive)
 endif()
 
 find_package(Threads REQUIRED)
+
+option(BITNET_APPLY_LLAMA_PATCHES "bitnet.cpp: apply patches/llama.cpp/*.patch to the llama.cpp submodule" ON)
+if (BITNET_APPLY_LLAMA_PATCHES)
+    include(cmake/ApplyLlamaPatches.cmake)
+endif()
 
 add_subdirectory(src)
 set(LLAMA_BUILD_SERVER ON CACHE BOOL "Build llama.cpp server" FORCE)
